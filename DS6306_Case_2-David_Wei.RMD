@@ -1,0 +1,424 @@
+---
+title: "DS6306_Case_2"
+author: "David Wei"
+date: "8/1/2020"
+output: html_document
+---
+### Introduction
+__Due to recent changes in the employee workforce, an analytics company "DDSAnalytics" has requested a study to analyze the potential factors that lead to up to employee Attrition and Monthly Income as well as providing forecasts based on those estimates. The focus of this case study will be on discovering trends, patterns and clues that help us formulate an overall predictive strategy. Additionally, once our predictive models have been created, we will discuss the accuracy of the models with varying sets of data. This case study will be primarily split into 4 parts: Data Tidying, EDA, Feature Selection and lastly our Classification & Prediction models. Enjoy!__
+\newline
+
+__Video Presentation: https://www.youtube.com/watch?v=3D79eI9_wzo&list=PLRg9SxoeIZkKhx7HUrQMG_8IzPicpuEwi&index=3&t=0s__
+
+
+### Setup & General Libraries
+```{r,warning=FALSE,message=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(GGally)
+
+setwd("C:/Users/David/Google Drive/Masters/Summer 2020/DS 6306 - Doing Data Science/Case Study 2/")
+df <- read.csv("CaseStudy2-data.csv", header=TRUE)
+```
+
+### Data Profiling & Tidying
+__As part of the data tidying process, we first want to verify if the dataset contains any missing or uncategorized data for any of the attributes. As shown below, we can confirm that all data is being populated. Once missing and uncategorized data was validated, we then created a combined dataset with our categorical variables dummycoded as "IDs"s and "Desc" for factor types for ease of use throughout the study. __
+```{r,warning=FALSE,message=FALSE}
+# verifying empty data
+library(naniar)
+vis_miss(df) + xlab("Data Columns")
+
+# exploring unique categorical values 
+cat_types <- c(3,4,6,9,13,17,19,23,24)
+for(i in cat_types){
+  print(colnames(df[i]))
+  print(df %>% count(df[,i]))
+}
+
+# taking a look into spread of our response variable (Attrition)
+table(df$Attrition)
+df %>% ggplot(aes(x=Attrition, fill=Attrition)) + geom_bar() + labs(title="Attrition Response Groupings")
+
+# new df containing ID and all converted categorical variables into factor types
+df_cat <- df
+for(i in cat_types){
+  df_cat[, i] <- factor(df_cat[,i])
+  x <- paste(colnames(df_cat[i]),"desc", sep="_")
+  colnames(df_cat)[i] <- paste(x)
+}
+# all categorical values including ID
+cat_columns <- c(1,3,4,6,9,13,17,19,23,24)
+df_cat_short <- data.frame(df_cat[, cat_columns])
+
+# new df containing ID and all converted categorical variables into numerical types
+df_num <- df
+# df_num$Attrition <- factor(df_num$Attrition)
+for(i in cat_types){
+  df_num[, i] <- as.numeric(factor(df_num[,i]))
+  x <- paste(colnames(df_num[i]),"ID", sep="_")
+  colnames(df_num)[i] <- paste(x)
+}
+df_num_short <- data.frame(df_num[, cat_columns])
+
+# storying all numerical data into temp df excluding categorical types
+df_temp <- df[, -cat_types]
+
+# joining the categorical factors (desc) with it's numerical types (IDs)
+df_short <- merge(x=df_num_short, y=df_cat_short, by="ID", all.x=TRUE)
+df_short <- df_short[c(1,2,11,3,12,4,13,5,14,6,15,7,16,8,17,9,18,10,19)]
+
+# joining all numerical with categorical data together as final df
+df_final <- merge(x=df_short, y=df_temp, by="ID", all=TRUE)
+head(df_final, 1)
+```
+
+### Creating Training/Test Sets & Downsampling
+__By observing our response variable, we noticed that our variable of interest (Attrition) had a large majority of the dataset comprised exclusively of employees who did not leave the company (minority being 16%). This stark contrast in attribute values could cause unwanted bias to our model. To account for it, we applied downsampling techniques to level such imbalances. Since the smaller set of attrition values totaled around 140 observations, we created a training and test split with downsampling applied for more accurate clarity and clearer distinction of separation in our model.__
+```{r,warning=FALSE,message=FALSE}
+# Train/Test split with cleaned data
+set.seed(27)
+splitPerc = .70
+df_index = sample(1:dim(df_final)[1],round(splitPerc * dim(df_final)[1]))
+df_train = df_final[df_index,]
+df_test = df_final[-df_index,]
+
+table(df_final$Attrition_ID) #original
+table(df_train$Attrition_ID) #train
+table(df_test$Attrition_ID) #test
+
+# Train/Test data with Downsampling Applied
+library(caret)
+df_final_downsampled <- downSample(x = df_final,y = df_final$Attrition_desc)
+df_train_downsampled <- downSample(x = df_train,y = df_train$Attrition_desc)
+df_test_downsampled <- downSample(x = df_test,y = df_test$Attrition_desc)
+
+table(df_final_downsampled$Attrition_ID) #original downsampled
+table(df_train_downsampled$Attrition_ID) # train downsampled
+table(df_test_downsampled$Attrition_ID) # test downsampled
+```
+
+### EDA - Part 1 - Analysis of Numerical Types
+__From a quick summary statistics on all available columns, our first goal is to see if there's any variables we can easily cross-off as insignificant based on all data available. From this exercise, we can see that there a few variables that either do not change much or have minimal amounts of variance such a EmployeeCount, PerformanceRating and StandardHours. Due to such little variation in these variables, we can safely remove them as potential factors to attrition to avoid overfitting our model. From this initial summary review, we can also immediately see that the "Over18" column is comprised exclusively of "Y"s, which in result will have no signifance to any of our models due to it's static nature. __
+\newline
+
+__EDA based Reduced numerical attributes (Round 1): OVer18, EmployeeCount, PerformanceRating and StandardHours__
+```{r,warning=FALSE,message=FALSE}
+library(corrplot)
+library(ggExtra)
+library(cowplot)
+library(GGally)
+
+# viewing quick sumamry statistics of all our numerical data
+num_types <- c(20:45)
+summary(df_final[,num_types])
+
+# EmployeeCount and StandardHours are static values. We can also see that almost 85% of all employees have a performance rating of 3. Additionally, we can also see that there is almost no relationship between Attrition and the employee rating so we can also remove it as a potential variable.
+df_train_downsampled %>% ggplot(aes(x=PerformanceRating, fill=Attrition_desc)) + geom_histogram() + labs(title="Distribution of PerformanceRating")
+abs(cor(df_train_downsampled$PerformanceRating, df_train_downsampled$Attrition_ID))
+```
+
+### EDA - Part 1 - Numerical Types - Correlation Matrix
+__We then plotted out a correlation matrix to better evaluate the remaining numerical variable types. To form the baseline of our analysis, we will look closer into any correlations higher than corr=.75. We first begin by analyzing the relationship between Job Level and Monthly Income which we has extremely strong correlation (r=.95). We can see that as job level increases, the monthly income increases as well indicating that as an employee ranks up in terms of job level, so does his/her monthly income. Given this assumption, we can safely remove JobLevel from the picture. What's interesting here is that though MonthlyIncome and HourlyRates are both indicators of an employee's potential earnings, there's almost no correlation between the two, indicating that though standard hours remain constant, there are potentially unprovided external factors such as # of weeks work, working hours, etc. that may influence these variables.__
+
+\newline
+
+__Another highly correlated relationships were between YearsInCurrentRole and YearsAtCompany (r=.81). When investigating this strong relationship, we can see that the number of years in the current role is significantly tied to the total number of years at the company. In other words, it's uncommon for an individual to stay in the same role for more than 10 years, but also in that same regards, equally unlikely that the same individual will stay at the company for more than 10 years also. As a result, there is simply less Attrition data the larger the length is at a company as most people tend to stay at a company between 0-10 years. Even more importantly, when we look into the years stayed at the company and the distribution of Attrition per year, it's surprisngly balanced between those who left and those who stayed! Therefore we can conclude that in terms of Attrition, neither the number of years at the company nor the years with current manager contributes to attrition.__
+
+\newline
+
+__EDA based Reduced numerical attributes (Round 2): JobLevel, YearsWithCurrManager, YearsInCurrentRole, NumCompaniesWorked, __
+```{r,warning=FALSE,message=FALSE}
+# creating correlation matrix  of numerical datatypes
+corr_matrix_num <- df_train_downsampled[,c(20:45)]
+M <- cor(corr_matrix_num, use="pairwise.complete.obs")
+corrplot(M, method = "number", order = "alphabet",number.cex=0.5) 
+
+# JobLevel vs MonthlyIncome
+ggplot(df_train_downsampled, aes(x=JobLevel, y=MonthlyIncome, fill=Attrition_desc)) + geom_jitter() +geom_smooth(method="lm") + labs(title="Job Level vs Monthly Income")
+
+# JobRole vs MonthlyIncome
+ggplot(df_train_downsampled, aes(x=JobRole_desc, y=MonthlyIncome, fill=Attrition_desc)) + geom_boxplot() + labs(title="JobRole vs MonthlyIncome")
+
+ggplot(df_train_downsampled, aes(x=JobRole_desc, y=MonthlyIncome, fill=JobRole_desc)) + geom_boxplot() + 
+  theme(legend.position = "none") + labs(title="JobRole vs MonthlyIncome")
+
+# Analysis into JobLevel and Job Role Trends
+df_train_downsampled %>% count(df_train_downsampled$JobRole_desc)
+
+job_role_order <- c('Sales Representative', 'Laboratory Technician', 'Research Scientist', 'Human Resources', 'Sales Executive', 'Manufacturing Director', 'Healthcare Representative', 'Research Director', 'Manager')
+ggplot(df_train, aes(x=factor(JobRole_desc, level=job_role_order))) + geom_histogram(stat="count", aes(fill=Attrition_desc)) + labs(title="Distribution of JobRole by Income", x="Job Role")
+
+ggplot(df_train, aes(x=factor(JobRole_desc, level=job_role_order), y=MonthlyIncome, fill=Attrition_desc)) + geom_boxplot() + labs(title="Distribution of JobRole by Income", x="Job Role")
+
+# YearsInCurrentRole vs YearsAtTheCompany
+ggplot(df_train_downsampled, aes(x=YearsInCurrentRole, y=YearsAtCompany, fill=Attrition_desc)) + geom_jitter() +geom_smooth(method="lm") + labs(title="YearsInCurrentRole vs YearsAtCompany")
+# Distribution of YearsInCurrentRole
+ggplot(df_train_downsampled, aes(x=YearsInCurrentRole)) + geom_histogram(stat="count", aes(fill=Attrition_desc)) + labs(title="Distribution of YearsInCurrentRole")
+# Distribution of YearsAtCompany
+ggplot(df_train_downsampled, aes(x=YearsAtCompany)) + geom_histogram(stat="count", aes(fill=Attrition_desc)) + labs(title="Distribution of YearsAtCompany")
+
+# Relationship between YearswithCurrManager and YearsAtCompany
+ggplot(df_train_downsampled, aes(x=YearsWithCurrManager, y=YearsAtCompany,fill=Attrition_desc)) + geom_jitter() +geom_smooth(method="lm") + labs(title="YearswithCurrManager vs YearsAtCompany")
+
+# Distribution of YearsAtCompany
+ggplot(df_train_downsampled, aes(x=YearsAtCompany)) + geom_histogram(stat="count", aes(fill=Attrition_desc)) + labs(title="Distribution of YearsAtCompany")
+
+# Evaluating relationship between JobSatisfaction and MonthlyIncome
+ggplot(df_train_downsampled, aes(x=JobSatisfaction, y=MonthlyIncome,fill=Attrition_desc)) + geom_jitter() + labs(title="JobSatisfaction vs MonthlyIncome")
+
+# Evaluating relationship between MonthlyIncome and MonthlyRate
+ggplot(df_train_downsampled, aes(x=MonthlyRate, y=MonthlyIncome)) + geom_point() + labs(title="MonthlyIncome and MonthlyRate")
+
+# # plotting all numerical variables against response (monthly income)
+# num_types_plot <- c(20:45)
+# num_types_par <- par(mfrow=c(6,5))
+# for(i in num_types_plot){
+#   col.name <- colnames(df_final_downsampled[i])
+#   plot(df_final_downsampled[,i],df_final_downsampled$MonthlyIncome, xlab=col.name, ylab="Monthly Income")
+#   
+# }
+# par(num_types_par)
+```
+
+### EDA - Part 2 - Analysis of Categorical Types & ANOVA
+__In the second part of our EDA, we wanted to look closer into our categorical variables. From a quick plot of our categorical type variables vs our response variable (attrition) on the downsampled training dataset (due to the aforementioned disporportion of our variable of interest) we can see a few things. First, we see that attrition is somewhat split evenly for most of our categorical variables, though is visual evidence to suggest there are a few variables such as JobRole that have a significant relationships with Attrition. Additionally, we can see that attrition increases as the employee's marital status shifts in a linear fashion between stages. Another interesting thing to note is that there are higher %'s of attrition among non-exempt (non-salaried) employees.__
+\newline
+
+__Lastly, we utilized an analysis of variance (ANOVA) to compare differences between Attrition and our categorical variables and saw that the DepartmentID, MartialStatusID and OVertime_ID had major differences (P-value <.02). Upon closer analysis of the DepartmentID we found that these differences were due to the lopsidedness of the amount of employees differing in each department though attrition for each department was fairly even.__
+
+\newline
+
+__EDA based Reduced categorical attributes (Round 2): Over18, BusinessTravel_ID, EducationField_ID, Gender_ID, JobRole_ID __
+```{r,warning=FALSE,message=FALSE}
+# # plotting our out our Response variable (attrituion) vs our categorical data to assess potential relationships
+# grep("_desc", colnames(df_final))
+cat_types_plot <- c(5,7,9,11,13,15,17,19)
+cat_types_dwnsmpled_par <- par(mfrow=c(3,3))
+for(i in cat_types_plot){
+  col.name <- colnames(df_train_downsampled[i])
+  plot(df_train_downsampled[,i],df_train_downsampled$Attrition_desc, xlab=col.name, ylab="Attrition")
+}
+par(cat_types_dwnsmpled_par)
+
+# # looking for differences with categorical variables using ANOVA
+# manova_fit_all <- aov(Attrition_ID~., data=df_final_downsampled)
+# summary(manova_fit_all)
+
+# Relationship between BusinessTravel and Attrition
+df_final_downsampled %>% ggplot(aes(x=BusinessTravel_desc, fill=Attrition_desc)) + geom_bar() + labs(title="BusinessTravel vs Attrition")
+
+# looking closer into the relationship between JobRole and Attrition.
+df_final_downsampled %>% ggplot(aes(x=JobRole_desc)) + geom_histogram(stat="count", aes(fill=Attrition_desc))
+
+# Distribution of Departments
+df_final_downsampled %>% ggplot(aes(x=Department_desc)) + geom_histogram(stat="count", aes(fill=Attrition_desc)) + labs(title="Distribution of Departments")
+cor(df_final_downsampled$Department_ID,df_final_downsampled$Attrition_ID)
+```
+
+### Automated Feature Selection
+__From our EDA, we will remove the following attributes from our feature selection process: (1) OVer18, (2) EmployeeCount, (3) EmployeeNumber, (4) JobLevel, (5) PerformanceRating, (6) StandardHours, (7) YearsAtCompany, (8) YearsInCurrentRole. One thing to note, is that YearsAtCompany and YearsInCurrentRole is removed only for the classification model. After the EDA based variables have been reduced, we will apply automated feature selection techniques, notably Forward Selection and Backward Selection for both our Classification and Linear models. Once the reduced set of variables for each feature selection method was created, we then selected the most commonly occuring variables amongst all 3 feature selection models as our final "reduced" dataset.__
+```{r,warning=FALSE,message=FALSE}
+library(MASS)
+# defining variables to exclude based on EDA (removing "_desc" attributes)
+exclude_columns_EDA<- c(1,4,5,7,9,11,13,15,16,17,19,24,25,29,35,37,43,45,46)
+# removing the EDA based variable reduction to both the downsampled test and train set
+full_model_train <- df_train_downsampled[, -exclude_columns_EDA]
+full_model_test <- df_test_downsampled[, -exclude_columns_EDA]
+# applying EDA based variable reduction to nondownsampeld train and test set
+full_model_train_orig <- df_train[, -exclude_columns_EDA]
+full_model_test_orig <- df_test_downsampled[, -exclude_columns_EDA]
+
+# Building out our Classification and Linear Regression Model
+class_full_model <- lm(Attrition_ID~., data=full_model_train[, -2])
+linear_full_model <- lm(MonthlyIncome~., data=full_model_train[, -c(2)])
+
+# stepwise Model
+class_step_model <- stepAIC(class_full_model, direction="both", trace=FALSE)
+summary(class_step_model)
+
+linear_step_model <- stepAIC(linear_full_model, direction="both", trace=FALSE)
+summary(linear_step_model)
+
+# Forward Model
+forward_min <- lm(Attrition_ID~ 1, data=full_model_train[, -2])
+class_fwd_model <- step(forward_min, scope=list(lower=forward_min, upper=class_full_model), direction="forward")
+summary(class_fwd_model)
+
+linear_forward_min <- lm(MonthlyIncome~ 1, data=full_model_train[, -2])
+linear_fwd_model <- step(linear_forward_min, scope=list(lower=linear_forward_min, upper=linear_full_model), direction="forward")
+summary(linear_fwd_model)
+
+# Backward Model
+class_bck_model <- stepAIC(class_full_model, direction="backward", trace=FALSE)
+summary(class_bck_model)
+
+linear_bck_model <- stepAIC(linear_full_model, direction="backward", trace=FALSE)
+summary(linear_bck_model)
+
+# For Classification Model: defining variables to exclude based on EDA (+ removing "_desc" attributes)
+exclude_columns_featureselect<- c(4,5,6,9,10,14,17,18,26)
+# For Classification Model: applying EDA based attribute reduction to nondownsampeld train and test set
+reduced_model_train_orig <- full_model_train_orig[, -exclude_columns_featureselect]
+reduced_model_test_orig <- full_model_test_orig[, -exclude_columns_featureselect]
+# For Classification Model: removing the EDA based attributes to both the downsampled test and train set
+reduced_model_train <- full_model_train[, -exclude_columns_featureselect]
+reduced_model_test <- full_model_test[, -exclude_columns_featureselect]
+
+# For Linear Regression Model: defining variables to exclude based on EDA (+ removing "_desc" attributes)
+exclude_columns_featureselect_linear <- c(4,5,6,9,10,14,18,26)
+# For Linear Regression Model using automated feature select
+exclude_columns_featureselect_linear_auto <- c(1,2,4,5,6,7,8,9,10,11,12,13,14,15,16,18,22,24,25)
+# For Linear Regression Model: removing the EDA based variable reduction to both the downsampled test and train set
+reduced_model_train_linear <- full_model_train[, -exclude_columns_featureselect_linear]
+reduced_model_test_linear <- full_model_test[, -exclude_columns_featureselect_linear]
+# For Linear Regression Model: removing automated feature select based variable reduction to both the downsampled test and train set
+reduced_model_train_linear_auto <- full_model_train[, -exclude_columns_featureselect_linear_auto]
+reduced_model_test_linear_auto <- full_model_test[, -exclude_columns_featureselect_linear_auto]
+
+# identifying top factors for Attrition
+manova_fit_all <- aov(Attrition_ID~.,data=reduced_model_train_orig[,-2])
+summary(manova_fit_all)
+
+df_final_downsampled %>% ggplot(aes(x=MaritalStatus_desc, fill=Attrition_desc)) + geom_bar() + labs(title="Distribution of Departments")
+
+```
+
+### Classification Model - Logistic Regression
+__We first wanted to classify our Attrition response using a logistic regression model approach. We modeled this twice, once with a downsampled dataset and another without any downsamplying applied. With the downsampled model, we had an Accuracy=.6184, Sensitivity=.7368 and Specificity=.50. Using the non-downsampled dataset, we had had higher Accuracy=.6316, much higher Sensitivity=.9474 but way lower Specificity=.3158. Using logistic regression, we then ran the model again this time using a reduced model based on automated feature selection methods, with this we saw general increases across the board: Accuracy=.6579,Sensitivity=.9211 and Specificity=.3947__
+```{r,warning=FALSE,message=FALSE}
+# Logistic Regression Model
+library(glmnet)
+logit_model_downsampled <- glm(Attrition_desc~., family="binomial", data=full_model_train[, -1])
+summary(logit_model_downsampled)
+logit_model_orig<- glm(Attrition_desc~., family="binomial", data=full_model_train_orig[, -1])
+summary(logit_model_orig)
+
+logit_model_reduced <- glm(Attrition_desc~., family="binomial", data=reduced_model_train_orig[, -1])
+summary(logit_model_reduced)
+
+#determing accuracy of logitic regression model
+logit_pred_downsampled <- predict(logit_model_downsampled, newdata=full_model_test, type="response")
+logit_pred_orig <- predict(logit_model_orig, newdata=full_model_test_orig, type="response")
+
+logit_pred_reduced <- predict(logit_model_reduced, newdata=reduced_model_test, type="response")
+
+cutoff <- .5
+logit_pred_downsampled.class <- factor(ifelse(logit_pred_downsampled>cutoff, "yes", "no"))
+logit_pred_orig.class <- factor(ifelse(logit_pred_orig>cutoff, "yes", "no"))
+logit_pred_reduced.class <- factor(ifelse(logit_pred_reduced>cutoff, "yes", "no"))
+
+# converting Attrition values to lower case to match with prediction factors 
+full_model_test$Attrition_desc <- tolower(full_model_test$Attrition_desc)
+full_model_test_orig$Attrition_desc <- tolower(full_model_test_orig$Attrition_desc)
+reduced_model_test$Attrition_desc <- tolower(reduced_model_test$Attrition_desc)
+
+# confusion matrix for logistic regression accuracy
+confusionMatrix(logit_pred_downsampled.class, as.factor(full_model_test$Attrition_desc))
+confusionMatrix(logit_pred_orig.class, as.factor(full_model_test_orig$Attrition_desc))
+confusionMatrix(logit_pred_reduced.class, as.factor(reduced_model_test$Attrition_desc))
+
+```
+### Classification Model - kNN
+__Another classification model was done using the kNN approach. Using a default 'k' factor of 5, we already hit optimal levesl of both Sensitivity (.7105) and Specificity (.6316). Based on higher metrics across the board as opposed to the logistric regression model approach, we will utilize kNN as our optimal classifatino model. __
+```{r,warning=FALSE,message=FALSE}
+library(class) # for knn
+reduced_model_train_knn <- reduced_model_train[,-2]
+reduced_model_test_knn <- reduced_model_test[,-2]
+
+knn_classification <- knn(reduced_model_train_knn,reduced_model_test_knn, reduced_model_train_knn$Attrition_ID,prob = TRUE, k = 5)
+knn_reduced_model_confusionMatrix <- confusionMatrix(table(knn_classification,reduced_model_test_knn$Attrition_ID))
+knn_reduced_model_confusionMatrix
+
+knn_comp <- reduced_model_train_knn
+knn_comp$pred_value <- knn.cv(reduced_model_train_knn,reduced_model_train_knn$Attrition_ID,prob = TRUE, k = 5)
+
+
+knn_tbl <- knn_comp %>% group_by(pred_value, Attrition_ID) %>% tally()
+knn_tbl$Classification <- ifelse(knn_tbl$pred_value ==knn_tbl$Attrition_ID, "Predicted", "Not Predicted")
+knn_tbl %>% ggplot(aes(x=Classification,y=n, fill= Classification)) + geom_bar(stat="identity")+
+  labs(y="Count", title="Attrition Prediction Accuracy")
+```
+
+### Linear Regression Model
+__The linear model was done using a simple linear regression approach. The linear regression model was applied 3 times, once with the EDA full model, another with a reduced model with EDA and automated feature selection applied, and lastly a model solely based on feature selected explanatory variables alone. One thing to note here is that using feature selection, it vastly reduced the variable set applied during EDA, this could be explained as feature selection removing variables that were not significant to predicting Salary (MonthlyIncome) that was significat to predicting Attrition. Once all 3 linear regression models were created, we outputed the prediction and compared them using RMSE as the metric comparison. We found that though the full model had the lowest RMSE (prediction variance), it could be more susceptible to overfitting and so the 2nd RMSE model which utilized a reduced model based on auto feature selection was chosen as our optimal linear regression model.__
+```{r,warning=FALSE,message=FALSE}
+# linear regression based on our EDA full model
+linear_regression_model_full <- lm(MonthlyIncome~., data=full_model_train[, -c(2)])
+summary(linear_regression_model_full)
+
+# linear regression based on our EDA + Automated Feature Selection model
+linear_regression_model_reduced <- lm(MonthlyIncome~., data=reduced_model_train_linear)
+summary(linear_regression_model_full)
+
+# linear regression model based only on Automated feature selection model
+linear_regression_model_reduced_auto <- lm(MonthlyIncome~., data=reduced_model_train_linear_auto)
+summary(linear_regression_model_reduced_auto)
+
+# Linear Regression RSMEs
+sqrt(mean(linear_regression_model_full$residuals^2)) #full model
+sqrt(mean(linear_regression_model_reduced$residuals^2)) #reduced model based on EDA
+sqrt(mean(linear_regression_model_reduced_auto$residuals^2)) #reduced model based on auto feature select
+
+# plotting out linear prediction
+summary(linear_regression_model_full)
+linear_plot <- par(mfrow=c(2,2))
+plot(linear_regression_model_full)
+par(linear_plot)
+
+plot(predict(linear_regression_model_full), full_model_train$MonthlyIncome, xlab="Predicted", ylab="Actual", main="Linear Regression Model Fit")
+abline(a=0,b=1)
+```
+
+### kNN - Optimal Classification and Regression Model Accuracy on Competition set
+_This section covers mostly running our optimal classification model (kNN) on the competition applied. Here we applied our optimal model to a new competition "test set" and generated a prediction variable out of it. We then filtered our final results with ID and our predictions as a .csv file to see how we did against an external unlabeled test set in predicting Attrition.__
+```{r,warning=FALSE,message=FALSE}
+# reading in classification dataset
+class_compete <- read.csv("C:/Users/David/Google Drive/Masters/Summer 2020/DS 6306 - Doing Data Science/Case Study 2/CaseStudy2CompSet No Attrition.csv", header=TRUE)
+
+# excluding variables that was not used in training model
+class_compete_test_exclude <- c(2,3,4,8,9,10,12,13,15,16,19,20,22,25,27,32,33,35)
+class_compete_test <- class_compete[, -class_compete_test_exclude]
+
+# create new df containing ID and all converted categorical variables into numerical types
+class_compete_cat <- c(2,8,10)
+for(i in class_compete_cat){
+  class_compete_test[, i] <- as.numeric(factor(class_compete_test[,i]))
+  # x <- paste(colnames(df_cat_num[i]),"ID", sep="_")
+  # colnames(df_cat_num)[i] <- paste(x)
+}
+str(class_compete_test)
+
+# adding KNN prediction to competition dataset
+class_compete_test$Attrition_pred <- knn(reduced_model_train_knn[,-1], class_compete_test[,-1], reduced_model_train_knn$Attrition_ID, prob=TRUE, k=5)
+
+# cleaning up kNN prediction output then writing out as .csv file
+class_compete_test$Attrition_pred_name <- ifelse(as.numeric(class_compete_test$Attrition_pred)==1, "No", "Yes")
+class_compete_test <- rename(class_compete_test, Attrition = Attrition_pred_name)
+df_classif_output <- class_compete_test[, c(1,19)]
+head(df_classif_output, 5)
+# write.csv(df_classif_output,"C:/Users/David/Google Drive/Masters/Summer 2020/DS 6306 - Doing Data Science/Case Study 2/Case2PredictionsWei Attrition.csv", row.names = FALSE)
+```
+
+### Linear Regression - Optimal Classification and Regression Model Accuracy on Competition set
+_Similar to the prior section. This section covers mostly running our optimal linear regression model on a competition test set. Here we applied our optimal model to a new competition "test set" and generated a prediction variable out of it. We then filtered our final results with ID and our predictions as a .csv file to see how we did against an external unlabeled test set in predicting Salary (MonthlyIncome).__
+```{r,warning=FALSE,message=FALSE}
+# reading in linear regression dataset
+linear_compete <- read.csv("C:/Users/David/Google Drive/Masters/Summer 2020/DS 6306 - Doing Data Science/Case Study 2/CaseStudy2CompSet No Salary.csv", header=TRUE)
+
+# excluding variables that was not used in training model
+linear_compete_test_exclude <- c(2:5,7:20,22,23,25,27,28,30,31,33,35)
+linear_compete_test <- linear_compete[, -linear_compete_test_exclude]
+# converting department to num type
+linear_compete_test$Department_ID <- as.numeric(factor(linear_compete_test$Department))
+
+# creating prediction using training linear regression model then writing out as a .csv file
+linear_compete_test$MonthlyIncome <- predict(linear_regression_model_reduced_auto, linear_compete_test)
+# nrow(linear_compete_test)
+str(linear_compete_test)
+df_linear_output <- linear_compete_test[, c(1,10)]
+head(df_linear_output, 5)
+
+# write.csv(df_linear_output,"C:/Users/David/Google Drive/Masters/Summer 2020/DS 6306 - Doing Data Science/Case Study 2/Case2PredictionsWei Salary.csv", row.names = FALSE)
+```
